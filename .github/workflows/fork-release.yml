@@ -1,0 +1,206 @@
+# Publishes the fork's packages to GitHub Packages as @rangeraidev/betteroffice-*,
+# versioned <upstream version>-<tag>, when a release tagged rfx.<number> is published.
+#
+# Nothing publishes before `gate`: the tag must be rfx.<number> and the tagged
+# commit must have passed the package and Rust CI gates. `build` has no write
+# access and no caches, so a cache another run wrote cannot reach the package;
+# `publish` runs no repository code, only attests and uploads the tarballs.
+#
+# The "Run workflow" button creates the tag and the release from a branch's
+# head and publishes in the same run. A release made with GITHUB_TOKEN fires no
+# release event, so nothing starts a second run; a release made in the UI runs
+# everything but create-release.
+name: fork release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to create, rfx.<number> (an existing release is re-published)
+        required: true
+        type: string
+      target:
+        description: Branch to tag
+        required: true
+        type: string
+        default: main
+      roots:
+        description: Packages to publish with their internal dependencies
+        required: true
+        type: string
+        default: docx-react xlsx-react fonts
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-release-${{ inputs.tag || github.event.release.tag_name }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ inputs.tag || github.event.release.tag_name }}
+
+jobs:
+  create-release:
+    if: github.repository == 'RangerAIDev/betteroffice' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.target }}
+          persist-credentials: false
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          sh scripts/fork-release-gate.sh version "$TAG"
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "::notice::release $TAG already exists; re-publishing it"
+            exit 0
+          fi
+          if gh api "repos/$GH_REPO/git/ref/tags/$TAG" --silent 2> /dev/null; then
+            echo "::error::tag $TAG exists without a release: publish the release from it, or delete it"
+            exit 1
+          fi
+          gh release create "$TAG" --target "$(git rev-parse HEAD)" --title "$TAG" --generate-notes --prerelease
+
+  gate:
+    needs: create-release
+    if: ${{ !cancelled() && github.repository == 'RangerAIDev/betteroffice' && needs.create-release.result != 'failure' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    permissions:
+      contents: read
+      checks: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TAG }}
+          persist-credentials: false
+      - run: sh scripts/fork-release-gate.sh version "$TAG"
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          sh scripts/fork-release-gate.sh checks "$TAG"
+          "Package gate" "Package tests (1/2)" "Package tests (2/2)" "Rust gate"
+
+  build:
+    needs: gate
+    if: ${{ !cancelled() && needs.gate.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TAG }}
+          persist-credentials: false
+
+      # No caches in a publishing pipeline: a cache another run wrote could
+      # poison the package (zizmor cache-poisoning), so the build starts clean.
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.4.3"
+          no-cache: true
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.99.1"
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-opt
+        env:
+          BINARYEN: version_132
+          SHA256: 195ddc94f9bc89f45abdabb0b9eea86023d727ba90eac8b35b80f2544fc30572
+        run: |
+          set -eu
+          tarball="$RUNNER_TEMP/binaryen.tar.gz"
+          curl -fsSL --retry 5 --retry-all-errors -o "$tarball" \
+            "https://github.com/WebAssembly/binaryen/releases/download/$BINARYEN/binaryen-$BINARYEN-x86_64-linux.tar.gz"
+          echo "$SHA256  $tarball" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/binaryen"
+          tar -xzf "$tarball" -C "$RUNNER_TEMP/binaryen" --strip-components=1
+          echo "$RUNNER_TEMP/binaryen/bin" >> "$GITHUB_PATH"
+
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: wasm-pack@0.15.0
+
+      - run: bun install --frozen-lockfile
+
+      - name: Build packages
+        run: bun run build:fonts && bun run build:xlsx && bun run build:docx
+
+      - name: Pack
+        env:
+          ROOTS: ${{ inputs.roots || 'docx-react xlsx-react fonts' }}
+        run: |
+          set -euf
+          # shellcheck disable=SC2086
+          bun scripts/fork-pack.ts "$TAG" "$RUNNER_TEMP/packages" $ROOTS
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: packages
+          path: ${{ runner.temp }}/packages
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    # Required reviewers approve each publish in the environment's settings.
+    environment: fork-release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: packages
+          path: packages
+
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: packages/*.tgz
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          registry-url: https://npm.pkg.github.com
+          scope: "@rangeraidev"
+          package-manager-cache: false
+
+      # Skips a version already published, so a re-run finishes a partial publish.
+      - name: Publish
+        env:
+          NODE_AUTH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          cd packages
+          jq -r '.[] | "\(.alias) \(.spec | sub("^npm:.*@"; "")) \(.tarball)"' packages.json |
+            while read -r name version tarball; do
+              if npm view "$name@$version" version > /dev/null 2>&1; then
+                echo "::notice::$name@$version is already published"
+                continue
+              fi
+              npm publish "$tarball" --tag fork --ignore-scripts
+            done
+          {
+            echo "ranger-ai \`package.json\` dependencies:"
+            echo '```json'
+            jq -r '.[] | "\"\(.name)\": \"\(.spec)\","' packages.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
