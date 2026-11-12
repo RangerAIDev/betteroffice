@@ -6,10 +6,9 @@
 # access and no caches, so a cache another run wrote cannot reach the package;
 # `publish` runs no repository code, only attests and uploads the tarballs.
 #
-# The "Run workflow" button creates the tag and the release from a branch's
-# head and publishes in the same run. A release made with GITHUB_TOKEN fires no
-# release event, so nothing starts a second run; a release made in the UI runs
-# everything but create-release.
+# Only admins can create rfx.* tags (repository ruleset), so an admin publishes
+# by creating the release: gh release create rfx.<n> --target main --prerelease.
+# "Run workflow" re-runs an existing release, e.g. to finish a partial publish.
 name: fork release
 
 on:
@@ -18,14 +17,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Tag to create, rfx.<number> (an existing release is re-published)
+        description: Existing release tag to re-publish, rfx.<number>
         required: true
         type: string
-      target:
-        description: Branch to tag
-        required: true
-        type: string
-        default: main
       roots:
         description: Packages to publish with their internal dependencies
         required: true
@@ -43,37 +37,8 @@ env:
   TAG: ${{ inputs.tag || github.event.release.tag_name }}
 
 jobs:
-  create-release:
-    if: github.repository == 'RangerAIDev/betteroffice' && github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ inputs.target }}
-          persist-credentials: false
-      - name: Create the release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          set -eu
-          sh scripts/fork-release-gate.sh version "$TAG"
-          if gh release view "$TAG" > /dev/null 2>&1; then
-            echo "::notice::release $TAG already exists; re-publishing it"
-            exit 0
-          fi
-          if gh api "repos/$GH_REPO/git/ref/tags/$TAG" --silent 2> /dev/null; then
-            echo "::error::tag $TAG exists without a release: publish the release from it, or delete it"
-            exit 1
-          fi
-          gh release create "$TAG" --target "$(git rev-parse HEAD)" --title "$TAG" --generate-notes --prerelease
-
   gate:
-    needs: create-release
-    if: ${{ !cancelled() && github.repository == 'RangerAIDev/betteroffice' && needs.create-release.result != 'failure' }}
+    if: github.repository == 'RangerAIDev/betteroffice'
     runs-on: ubuntu-24.04
     timeout-minutes: 100
     permissions:
