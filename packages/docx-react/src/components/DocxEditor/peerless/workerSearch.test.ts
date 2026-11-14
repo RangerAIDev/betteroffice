@@ -263,6 +263,19 @@ test('changed documents immediately discard old highlight rectangles', async () 
   search.dispose();
 });
 
+test('a resumed search searches and follows document changes again', async () => {
+  const { search, change } = fixture();
+  search.dispose();
+  await expect(search.host.search('cat')).rejects.toThrow('Search was superseded');
+  search.resume();
+  expect(await search.host.search('cat')).toMatchObject({ total: 1, current: 0 });
+  expect(search.getSnapshot().highlights).toHaveLength(1);
+  change();
+  expect(search.getSnapshot().highlights).toEqual([]);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  search.dispose();
+});
+
 test('a mismatch between native and accepted matches refuses replacement', async () => {
   const { search, submit, read } = fixture();
   await search.host.search('cat', { caseSensitive: true });

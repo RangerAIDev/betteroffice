@@ -469,8 +469,11 @@ export const PeerlessDocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(fun
       scrollerElement?.removeEventListener('scroll', scroll); window.removeEventListener('resize', refresh);
     };
   }, [pluginHost, overlayLayer]);
-  useEffect(() => () => { loadRequest.current?.reject(new Error('Editor was closed')); loadRequest.current = null;
-    pluginHost.close('unmounted'); pluginGeometry.dispose(); search.dispose(); controller.dispose(); }, [controller, pluginHost, search]);
+  useEffect(() => {
+    search.resume();
+    return () => { loadRequest.current?.reject(new Error('Editor was closed')); loadRequest.current = null;
+      pluginHost.close('unmounted'); pluginGeometry.dispose(); search.dispose(); controller.dispose(); };
+  }, [controller, pluginHost, search]);
   const identity = useRef<PeerlessViewIdentity | null>(null);
   const retained = useRef<RetainedFrame | null>(null);
   const pageIndexes = useRef(new Map<string, number>());

@@ -147,7 +147,7 @@ export function createWorkerSearch(controller: ReturnType<typeof createPeerlessS
     onSearchChange(listener) { hostListeners.add(listener); return () => hostListeners.delete(listener); },
   };
   let geometry = controller.getSnapshot().view?.geometry;
-  const unsubscribe = controller.subscribe(() => {
+  const watch = () => controller.subscribe(() => {
     const view = controller.getSnapshot().view;
     if (!run) return;
     if (!view || view.identity.session !== run.session) return clear();
@@ -159,6 +159,7 @@ export function createWorkerSearch(controller: ReturnType<typeof createPeerlessS
       void highlights(run, false).catch(() => {});
     }
   });
+  let unsubscribe = watch();
   return {
     host, getSnapshot: () => state,
     async find(query: string, options: FindOptions): Promise<DocxSearchState> {
@@ -201,6 +202,10 @@ export function createWorkerSearch(controller: ReturnType<typeof createPeerlessS
       } finally {
         pendingReplaces--;
       }
+    },
+    resume() {
+      if (!disposed) return;
+      disposed = false; geometry = controller.getSnapshot().view?.geometry; unsubscribe = watch();
     },
     dispose() { disposed = true; generation++; unsubscribe(); listeners.clear(); hostListeners.clear(); },
   };
