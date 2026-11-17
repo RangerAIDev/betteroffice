@@ -289,6 +289,21 @@ test('layout waits issued while the worker opens settle on the first complete la
   await expect(closed).rejects.toThrow('closed');
 });
 
+test('a resumed controller waits for layout again', async () => {
+  const { controller, binding, viewStore } = fixture();
+  const identity = viewStore.getSnapshot().identity;
+  controller.dispose();
+  await expect(controller.ref.whenLayoutComplete()).rejects.toThrow('closed');
+  controller.resume();
+  controller.opening();
+  controller.attach(binding);
+  viewStore.installFrameGeometry({ identity, coversThroughSeq: 0, frameEpoch: 1, layoutRevision: 1,
+    pages: [{ page: { pageId: '0', pageIndex: 0 }, bounds: { x: 0, y: 0, width: 600, height: 800 }, transform: [1, 0, 0, 1, 0, 0] as const }],
+    caret: null, selectionRects: [] });
+  expect(await controller.ref.whenLayoutComplete()).toBe(1);
+  controller.dispose();
+});
+
 test('worker state opens shell command gates without a legacy document or session', () => {
   const { controller, binding } = fixture();
   expect(controller.commands.store.getState('undo').enabled).toBe(false);

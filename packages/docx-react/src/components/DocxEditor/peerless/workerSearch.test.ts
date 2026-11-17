@@ -12,7 +12,7 @@ function fixture(starts = [7]) {
   const accepted = { story: 'body', view: 'accepted', start: { paraId: 'p', offset: 3 }, end: { paraId: 'p', offset: 6 } };
   let version = 0;
   const listeners = new Set<() => void>();
-  const geometry = { frameEpoch: 1, layoutRevision: 1, pages: starts.map((_, pageIndex) => ({ page: { pageId: String(pageIndex + 1), pageIndex },
+  let geometry = { frameEpoch: 1, layoutRevision: 1, pages: starts.map((_, pageIndex) => ({ page: { pageId: String(pageIndex + 1), pageIndex },
     bounds: { x: 10, y: 20 + pageIndex * 1000 }, displayPage: { unbuilt: true, positionSpan: [1, 20] } })) };
   const read = mock(async (request: { kind: string }) => request.kind === 'readParagraphs'
     ? { ok: true, version: 'native-token', paragraphs: [{ story: 'body', paraId: 'p', text: 'xx cat' }] }
@@ -29,7 +29,9 @@ function fixture(starts = [7]) {
   };
   const reveal = mock(() => {});
   const search = createWorkerSearch(controller as never, reveal);
-  return { search, read, submit, reveal, native, accepted, change(notify = true) { version++; if (notify) listeners.forEach((listener) => listener()); } };
+  return { search, read, submit, reveal, native, accepted,
+    relayout() { geometry = { ...geometry }; listeners.forEach((listener) => listener()); },
+    change(notify = true) { version++; if (notify) listeners.forEach((listener) => listener()); } };
 }
 
 test('host search reads worker matches, highlights without selecting, navigates and clears', async () => {
@@ -253,9 +255,43 @@ test('navigation reveals a never-built match using retained page position spans'
   search.dispose();
 });
 
+test('a match revealed on an unbuilt page is revealed again once it has rectangles', async () => {
+  const { search, read, reveal, relayout } = fixture();
+  const original = read.getMockImplementation()!;
+  let built = false;
+  read.mockImplementation(async (request) => request.kind === 'rangeHighlights' && !built
+    ? { version: 'native-token', frameEpoch: 1, layoutRevision: 1, rects: [[]], unbuiltPages: [0] } as never
+    : original(request));
+  await search.host.search('cat');
+  expect(reveal).toHaveBeenCalledTimes(1);
+  expect(reveal).toHaveBeenLastCalledWith(expect.objectContaining({ width: 0, height: 0 }));
+  built = true;
+  relayout();
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(reveal).toHaveBeenCalledTimes(2);
+  expect(reveal).toHaveBeenLastCalledWith(expect.objectContaining({ x: 14, y: 25, width: 30, height: 12 }));
+  relayout();
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(reveal).toHaveBeenCalledTimes(2);
+  search.dispose();
+});
+
 test('changed documents immediately discard old highlight rectangles', async () => {
   const { search, change } = fixture();
   await search.host.search('cat');
+  expect(search.getSnapshot().highlights).toHaveLength(1);
+  change();
+  expect(search.getSnapshot().highlights).toEqual([]);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  search.dispose();
+});
+
+test('a resumed search searches and follows document changes again', async () => {
+  const { search, change } = fixture();
+  search.dispose();
+  await expect(search.host.search('cat')).rejects.toThrow('Search was superseded');
+  search.resume();
+  expect(await search.host.search('cat')).toMatchObject({ total: 1, current: 0 });
   expect(search.getSnapshot().highlights).toHaveLength(1);
   change();
   expect(search.getSnapshot().highlights).toEqual([]);

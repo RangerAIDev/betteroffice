@@ -5,7 +5,9 @@ import type { createPeerlessShellController } from './shellController';
 import type { DocxEchoRect } from '@betteroffice/docx/worker';
 
 type Hit = { displayFrom: number; range: YrsStoryRange; ordinal: number; match: FindMatch };
-type Run = { query: string; options: FindOptions; token: string; version: number; session: string; hits: Hit[]; all: Hit[]; current: number; starting: boolean; anchor?: YrsStickyPosition | null };
+type Run = { query: string; options: FindOptions; token: string; version: number; session: string; hits: Hit[]; all: Hit[]; current: number; starting: boolean; anchor?: YrsStickyPosition | null;
+  /** A reveal that landed on an unbuilt page's estimate: repeated once the match has rectangles. */
+  unrevealed?: boolean };
 
 export function createWorkerSearch(controller: ReturnType<typeof createPeerlessShellController>, reveal: (rect: DocxEchoRect) => void) {
   let run: Run | null = null;
@@ -68,6 +70,7 @@ export function createWorkerSearch(controller: ReturnType<typeof createPeerlessS
     }));
     state = { ...state, highlights: rects }; publish();
     const target = rects.find(rect => rect.current);
+    if (scroll) candidate.unrevealed = !target;
     if (scroll && target) reveal(target);
     else if (scroll) {
       const hit = candidate.hits[candidate.current];
@@ -147,7 +150,7 @@ export function createWorkerSearch(controller: ReturnType<typeof createPeerlessS
     onSearchChange(listener) { hostListeners.add(listener); return () => hostListeners.delete(listener); },
   };
   let geometry = controller.getSnapshot().view?.geometry;
-  const unsubscribe = controller.subscribe(() => {
+  const watch = () => controller.subscribe(() => {
     const view = controller.getSnapshot().view;
     if (!run) return;
     if (!view || view.identity.session !== run.session) return clear();
@@ -156,9 +159,10 @@ export function createWorkerSearch(controller: ReturnType<typeof createPeerlessS
       void find(previous.query, previous.options, true).catch(() => {});
     } else if (view.geometry !== geometry) {
       geometry = view.geometry; state = { ...state, highlights: [] }; publish();
-      void highlights(run, false).catch(() => {});
+      void highlights(run, run.unrevealed === true).catch(() => {});
     }
   });
+  let unsubscribe = watch();
   return {
     host, getSnapshot: () => state,
     async find(query: string, options: FindOptions): Promise<DocxSearchState> {
@@ -201,6 +205,10 @@ export function createWorkerSearch(controller: ReturnType<typeof createPeerlessS
       } finally {
         pendingReplaces--;
       }
+    },
+    resume() {
+      if (!disposed) return;
+      disposed = false; geometry = controller.getSnapshot().view?.geometry; unsubscribe = watch();
     },
     dispose() { disposed = true; generation++; unsubscribe(); listeners.clear(); hostListeners.clear(); },
   };

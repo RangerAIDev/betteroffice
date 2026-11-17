@@ -1102,6 +1102,10 @@ export function createPeerlessShellController(initial: Options) {
       replace();
       reset('empty');
     },
+    resume() {
+      if (!closed) return;
+      closed = false; commands.attach(commandBinding);
+    },
     dispose() { unsubscribe?.(); binding = null; batchResults.clear(); commentResults.clear(); appliedBatches.clear(); closed = true; publish(); commands.detach(commandBinding); listeners.clear(); shellListeners.clear(); changes.clear(); selections.clear(); },
   };
 }
