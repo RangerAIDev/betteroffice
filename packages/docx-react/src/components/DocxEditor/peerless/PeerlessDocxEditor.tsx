@@ -470,7 +470,7 @@ export const PeerlessDocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(fun
     };
   }, [pluginHost, overlayLayer]);
   useEffect(() => {
-    search.resume();
+    controller.resume(); search.resume();
     return () => { loadRequest.current?.reject(new Error('Editor was closed')); loadRequest.current = null;
       pluginHost.close('unmounted'); pluginGeometry.dispose(); search.dispose(); controller.dispose(); };
   }, [controller, pluginHost, search]);
